@@ -1,0 +1,21 @@
+# Backend
+slp-evaluation-backend/venv/
+slp-evaluation-backend/__pycache__/
+slp-evaluation-backend/app/__pycache__/
+slp-evaluation-backend/app/*/__pycache__/
+slp-evaluation-backend/*.pyc
+slp-evaluation-backend/.env
+slp-evaluation-backend/uploads/
+slp-evaluation-backend/slp_evaluation.db
+
+# Frontend
+slp-evaluation-frontend/node_modules/
+slp-evaluation-frontend/.next/
+slp-evaluation-frontend/out/
+slp-evaluation-frontend/.env.local
+slp-evaluation-frontend/.env.development.local
+slp-evaluation-frontend/.env.production.local
+
+# OS
+.DS_Store
+*.log
