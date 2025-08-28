@@ -107,6 +107,7 @@ async def calculate_scores_endpoint(db: Session = Depends(get_db)):
         db.commit()
         
         return {
+            "student_age": f"{session.age_years}y {session.age_months}m",
             "listening_scores": {
                 "raw_score": scores["listening_raw_score"],
                 "standard_score": scores["listening_standard_score"],
