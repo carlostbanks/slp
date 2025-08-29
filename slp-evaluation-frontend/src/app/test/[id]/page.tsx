@@ -53,19 +53,50 @@ export default function TestPage() {
   const [calculating, setCalculating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [oralExpanded, setOralExpanded] = useState(false)
-  const [listeningExpanded, setListeningExpanded] = useState(false)
+  const [oralExpanded, setOralExpanded] = useState(true)
+  const [listeningExpanded, setListeningExpanded] = useState(true)
+  const [undoStack, setUndoStack] = useState<{taskId: number, oldResponse: string}[]>([])
+  const [copiedItems, setCopiedItems] = useState<{[key: string]: boolean}>({})
   const router = useRouter()
   const params = useParams()
   const evaluationId = params.id
 
   const fetchTestData = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/api/evaluation/test/${evaluationId}`)
+      const token = localStorage.getItem('token')
+      if (!token) {
+        router.push('/')
+        return
+      }
+
+      const response = await fetch(`http://localhost:8000/api/evaluation/test/${evaluationId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
       
+      if (response.status === 401) {
+        router.push('/')
+        return
+      }
+
       if (response.ok) {
         const data = await response.json()
         setTestData(data)
+        
+        // If test is completed, fetch scores
+        if (data.evaluation.status === 'completed') {
+          const scoresResponse = await fetch(`http://localhost:8000/api/evaluation/test/${evaluationId}/calculate`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          })
+          if (scoresResponse.ok) {
+            const scoresData = await scoresResponse.json()
+            setScores(scoresData)
+          }
+        }
       } else {
         setError('Failed to load test data')
       }
@@ -83,13 +114,27 @@ export default function TestPage() {
   }, [evaluationId])
 
   const handleResponseChange = async (taskId: number, response: string) => {
+    // Don't allow changes if test is completed
+    if (testData?.evaluation.status === 'completed') {
+      return
+    }
+
     setSaving(true)
     
+    // Store old response for undo
+    const task = [...(testData?.oral_tasks || []), ...(testData?.listening_tasks || [])]
+      .find(t => t.id === taskId)
+    if (task) {
+      setUndoStack(prev => [...prev, { taskId, oldResponse: task.response }])
+    }
+    
     try {
+      const token = localStorage.getItem('token')
       const res = await fetch(`http://localhost:8000/api/evaluation/test/${evaluationId}/response`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           task_id: taskId,
@@ -121,18 +166,42 @@ export default function TestPage() {
     }
   }
 
+  const copyIndividualItem = async (text: string, itemKey: string) => {
+    await navigator.clipboard.writeText(text)
+    setCopiedItems(prev => ({...prev, [itemKey]: true}))
+    // Reset checkmark after 2 seconds
+    setTimeout(() => {
+        setCopiedItems(prev => ({...prev, [itemKey]: false}))
+    }, 2000)
+    }
+
+  const handleUndo = async () => {
+    if (undoStack.length === 0) return
+
+    const lastChange = undoStack[undoStack.length - 1]
+    setUndoStack(prev => prev.slice(0, -1))
+
+    await handleResponseChange(lastChange.taskId, lastChange.oldResponse)
+  }
+
   const handleCalculate = async () => {
     setCalculating(true)
     setError('')
 
     try {
+      const token = localStorage.getItem('token')
       const response = await fetch(`http://localhost:8000/api/evaluation/test/${evaluationId}/calculate`, {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
       })
 
       if (response.ok) {
         const data = await response.json()
         setScores(data)
+        // Refresh test data to update status
+        await fetchTestData()
       } else {
         const errorData = await response.json()
         setError(errorData.detail || 'Failed to calculate scores')
@@ -175,16 +244,27 @@ export default function TestPage() {
     )
   }
 
+  const isCompleted = testData.evaluation.status === 'completed'
+
   return (
     <div className="min-h-screen bg-gray-100 p-6 pb-32">
       <div className="max-w-full mx-auto">
-        <div className="mb-8">
+        <div className="mb-8 flex justify-between items-center">
           <button
             onClick={() => router.push('/dashboard')}
             className="text-indigo-600 hover:text-indigo-900 text-xl"
           >
             ← Back to Dashboard
           </button>
+          
+          {!isCompleted && undoStack.length > 0 && (
+            <button
+              onClick={handleUndo}
+              className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+            >
+              Undo Last Change
+            </button>
+          )}
         </div>
 
         {error && (
@@ -195,7 +275,7 @@ export default function TestPage() {
 
         {/* Student Info */}
         <div className="bg-white rounded-lg shadow p-8 mb-8">
-          <h1 className="text-4xl font-bold text-black mb-6">OWLS-II Evaluation</h1>
+          <h1 className="text-4xl font-bold text-black mb-6">OWLS-II Evaluation {isCompleted && '(Completed)'}</h1>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-black text-2xl">
             <div><strong>Student:</strong> {testData.evaluation.student_name}</div>
             <div><strong>Age:</strong> {testData.evaluation.age}</div>
@@ -205,66 +285,139 @@ export default function TestPage() {
 
         {/* Results Display */}
         {scores && (
-          <div className="bg-white rounded-lg shadow p-8 mb-8">
-            <h3 className="text-3xl font-bold text-black mb-6">Test Results</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
-              <div className="bg-green-50 p-6 rounded-lg border">
-                <h4 className="font-bold text-green-800 mb-4 text-2xl">Listening Comprehension</h4>
-                <p className="text-black text-xl mb-2">Raw Score: {scores.lc_scores.lc_raw_score}</p>
-                <p className="text-black text-xl mb-2">Standard Score: {scores.lc_scores.lc_standard_score}</p>
-                <p className="text-black text-xl mb-4">Percentile Rank: {scores.lc_scores.lc_percentile_rank}</p>
-                <button
-                  onClick={() => copyToClipboard(`LC: SS:${scores.lc_scores.lc_standard_score}, PR:${scores.lc_scores.lc_percentile_rank}`)}
-                  className="px-4 py-2 bg-green-600 text-white text-lg rounded hover:bg-green-700"
-                >
-                  Copy
-                </button>
-              </div>
-
-              <div className="bg-purple-50 p-6 rounded-lg border">
-                <h4 className="font-bold text-purple-800 mb-4 text-2xl">Oral Expression</h4>
-                <p className="text-black text-xl mb-2">Raw Score: {scores.oe_scores.oe_raw_score}</p>
-                <p className="text-black text-xl mb-2">Standard Score: {scores.oe_scores.oe_standard_score}</p>
-                <p className="text-black text-xl mb-4">Percentile Rank: {scores.oe_scores.oe_percentile_rank}</p>
-                <button
-                  onClick={() => copyToClipboard(`OE: SS:${scores.oe_scores.oe_standard_score}, PR:${scores.oe_scores.oe_percentile_rank}`)}
-                  className="px-4 py-2 bg-purple-600 text-white text-lg rounded hover:bg-purple-700"
-                >
-                  Copy
-                </button>
-              </div>
-
-              <div className="bg-gray-50 p-6 rounded-lg border">
-                <h4 className="font-bold text-gray-800 mb-4 text-2xl">Composite</h4>
-                <p className="text-black text-xl mb-2">Sum: {scores.composite_scores.sum_standard_scores}</p>
-                <p className="text-black text-xl mb-2">Standard Score: {scores.composite_scores.composite_standard_score}</p>
-                <p className="text-black text-xl mb-4">Percentile Rank: {scores.composite_scores.composite_percentile_rank}</p>
-                <button
-                  onClick={() => copyToClipboard(`Composite: SS:${scores.composite_scores.composite_standard_score}, PR:${scores.composite_scores.composite_percentile_rank}`)}
-                  className="px-4 py-2 bg-gray-600 text-white text-lg rounded hover:bg-gray-700"
-                >
-                  Copy
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-blue-50 p-6 rounded-lg border">
-              <div className="flex justify-between items-center mb-4">
-                <h4 className="font-bold text-blue-800 text-2xl">Summary of Evaluation</h4>
-                <button
-                  onClick={() => copyToClipboard("Summary report will go here")}
-                  className="px-4 py-2 bg-blue-600 text-white text-lg rounded hover:bg-blue-700"
-                >
-                  Copy Report
-                </button>
-              </div>
-              <div className="bg-white p-6 rounded border text-black text-xl">
-                <p>Summary report will be generated here based on strengths and weaknesses analysis.</p>
-              </div>
-            </div>
+  <div className="bg-white rounded-lg shadow p-8 mb-8">
+    <h3 className="text-3xl font-bold text-black mb-6">Test Results</h3>
+    
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
+      <div className="bg-green-50 p-6 rounded-lg border">
+        <h4 className="font-bold text-green-800 mb-4 text-2xl">Listening Comprehension</h4>
+        <p className="text-gray-600 text-lg mb-4">Table A1 - Age: {scores.student_age}, Raw Score: {scores.lc_scores.lc_raw_score}</p>
+        
+        <div className="space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Raw Score: {scores.lc_scores.lc_raw_score}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.lc_scores.lc_raw_score.toString(), 'lc_raw')}
+              className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 flex items-center"
+            >
+              {copiedItems['lc_raw'] ? '✓' : 'Copy'}
+            </button>
           </div>
-        )}
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Standard Score: {scores.lc_scores.lc_standard_score}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.lc_scores.lc_standard_score.toString(), 'lc_ss')}
+              className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 flex items-center"
+            >
+              {copiedItems['lc_ss'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Percentile Rank: {scores.lc_scores.lc_percentile_rank}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.lc_scores.lc_percentile_rank, 'lc_pr')}
+              className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 flex items-center"
+            >
+              {copiedItems['lc_pr'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-purple-50 p-6 rounded-lg border">
+        <h4 className="font-bold text-purple-800 mb-4 text-2xl">Oral Expression</h4>
+        <p className="text-gray-600 text-lg mb-4">Table A1 - Age: {scores.student_age}, Raw Score: {scores.oe_scores.oe_raw_score}</p>
+        
+        <div className="space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Raw Score: {scores.oe_scores.oe_raw_score}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.oe_scores.oe_raw_score.toString(), 'oe_raw')}
+              className="px-3 py-1 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 flex items-center"
+            >
+              {copiedItems['oe_raw'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Standard Score: {scores.oe_scores.oe_standard_score}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.oe_scores.oe_standard_score.toString(), 'oe_ss')}
+              className="px-3 py-1 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 flex items-center"
+            >
+              {copiedItems['oe_ss'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Percentile Rank: {scores.oe_scores.oe_percentile_rank}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.oe_scores.oe_percentile_rank, 'oe_pr')}
+              className="px-3 py-1 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 flex items-center"
+            >
+              {copiedItems['oe_pr'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-50 p-6 rounded-lg border">
+        <h4 className="font-bold text-gray-800 mb-4 text-2xl">Oral Language Composite</h4>
+        <p className="text-gray-600 text-lg mb-4">Table A2 - Sum of LC and OE Standard Scores: {scores.composite_scores.sum_standard_scores}</p>
+        
+        <div className="space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Sum: {scores.composite_scores.sum_standard_scores}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.composite_scores.sum_standard_scores.toString(), 'comp_sum')}
+              className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 flex items-center"
+            >
+              {copiedItems['comp_sum'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Standard Score: {scores.composite_scores.composite_standard_score}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.composite_scores.composite_standard_score.toString(), 'comp_ss')}
+              className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 flex items-center"
+            >
+              {copiedItems['comp_ss'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+          
+          <div className="flex justify-between items-center">
+            <span className="text-black text-xl">Percentile Rank: {scores.composite_scores.composite_percentile_rank}</span>
+            <button
+              onClick={() => copyIndividualItem(scores.composite_scores.composite_percentile_rank, 'comp_pr')}
+              className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 flex items-center"
+            >
+              {copiedItems['comp_pr'] ? '✓' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-blue-50 p-6 rounded-lg border">
+      <div className="flex justify-between items-center mb-4">
+        <h4 className="font-bold text-blue-800 text-2xl">Summary of Evaluation</h4>
+        <button
+          onClick={() => copyIndividualItem("Summary report content here", 'summary')}
+          className="px-4 py-2 bg-blue-600 text-white text-lg rounded hover:bg-blue-700 flex items-center"
+        >
+          {copiedItems['summary'] ? '✓ Copied' : 'Copy Report'}
+        </button>
+      </div>
+      <div className="bg-white p-6 rounded border text-black text-xl">
+        <p>Summary report will be generated here based on strengths and weaknesses analysis.</p>
+      </div>
+    </div>
+  </div>
+)}
+
 
         {/* Oral Expression Test */}
         <div className="bg-white rounded-lg shadow mb-8 border-l-8 border-purple-500">
@@ -301,6 +454,7 @@ export default function TestPage() {
                           checked={task.response === 'correct'}
                           onChange={(e) => handleResponseChange(task.id, e.target.value)}
                           className="w-6 h-6"
+                          disabled={isCompleted}
                         />
                       </td>
                       <td className="py-4 px-4">
@@ -311,6 +465,7 @@ export default function TestPage() {
                           checked={task.response === 'incorrect'}
                           onChange={(e) => handleResponseChange(task.id, e.target.value)}
                           className="w-6 h-6"
+                          disabled={isCompleted}
                         />
                       </td>
                       <td className="py-4 px-4 font-bold text-black text-xl">{task.item}</td>
@@ -359,6 +514,7 @@ export default function TestPage() {
                           checked={task.response === 'correct'}
                           onChange={(e) => handleResponseChange(task.id, e.target.value)}
                           className="w-6 h-6"
+                          disabled={isCompleted}
                         />
                       </td>
                       <td className="py-4 px-4">
@@ -369,6 +525,7 @@ export default function TestPage() {
                           checked={task.response === 'incorrect'}
                           onChange={(e) => handleResponseChange(task.id, e.target.value)}
                           className="w-6 h-6"
+                          disabled={isCompleted}
                         />
                       </td>
                       <td className="py-4 px-4 font-bold text-black text-xl">{task.item}</td>
@@ -383,33 +540,34 @@ export default function TestPage() {
         </div>
       </div>
 
-      {/* Fixed bottom buttons */}
-      {!scores && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white shadow-lg border-t p-6">
-          <div className="max-w-full mx-auto text-center">
+      {/* Fixed bottom buttons - only show if not completed */}
+      {/* Fixed right-side buttons - only show if not completed */}
+        {!isCompleted && (
+        <div className="fixed top-1/2 right-8 transform -translate-y-1/2 z-50">
+            <div className="flex flex-col space-y-4">
             <button
-              onClick={handleCalculate}
-              disabled={calculating}
-              className="px-12 py-4 bg-indigo-600 text-white text-2xl font-bold rounded hover:bg-indigo-700 disabled:opacity-50 mr-6"
+                onClick={handleCalculate}
+                disabled={calculating}
+                className="px-8 py-4 bg-indigo-600 text-white text-xl font-bold rounded-lg hover:bg-indigo-700 disabled:opacity-50 shadow-xl"
             >
-              {calculating ? (
+                {calculating ? (
                 <div className="flex items-center justify-center">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mr-3"></div>
-                  Calculating...
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                    Calculating...
                 </div>
-              ) : 'Calculate Scores'}
+                ) : 'Calculate Scores'}
             </button>
             
             <button
-              onClick={handleCalculate}
-              disabled={calculating}
-              className="px-12 py-4 bg-orange-600 text-white text-2xl font-bold rounded hover:bg-orange-700 disabled:opacity-50"
+                onClick={handleCalculate}
+                disabled={calculating}
+                className="px-8 py-4 bg-orange-600 text-white text-xl font-bold rounded-lg hover:bg-orange-700 disabled:opacity-50 shadow-xl"
             >
-              End Test
+                End Test
             </button>
-          </div>
+            </div>
         </div>
-      )}
+        )}
     </div>
   )
 }
