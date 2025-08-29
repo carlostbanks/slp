@@ -1,12 +1,15 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter, usePathname } from 'next/navigation'
 import Login from './login/page'
 import Dashboard from './dashboard/page'
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const router = useRouter()
+  const pathname = usePathname()
 
   useEffect(() => {
     const savedToken = typeof window !== 'undefined' ? localStorage.getItem('token') : null
@@ -16,6 +19,13 @@ export default function App() {
       setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    // Handle routing after token is verified
+    if (!loading && token && pathname === '/') {
+      router.push('/dashboard')
+    }
+  }, [loading, token, pathname, router])
 
   const verifyToken = async (tokenToVerify: string) => {
     try {
@@ -62,13 +72,13 @@ export default function App() {
     )
   }
 
-  return (
-    <div className="App">
-      {token ? (
-        <Dashboard token={token} onLogout={handleLogout} />
-      ) : (
-        <Login onLoginSuccess={handleLoginSuccess} />
-      )}
-    </div>
-  )
+  if (!token) {
+    return <Login onLoginSuccess={handleLoginSuccess} />
+  }
+
+  if (pathname === '/dashboard') {
+    return <Dashboard token={token} onLogout={handleLogout} />
+  }
+
+  return null
 }
